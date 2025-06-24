@@ -23,7 +23,7 @@ cd Grounded-Segment-Anything
 pip install -e .
 cd ../..
 
-In our environment, we use pytorch=3.0.1+cu118.
+In our environment, we use pytorch=2.0.1+cu118.
 ```
 
 ## Training
