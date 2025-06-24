@@ -1,0 +1,41 @@
+# hypernerf
+# split-cookie
+python train_4dgs.py -s ./data/hypernerf/split-cookie/ --port 6017 --expname "hypernerf/split-cookie" --configs arguments/hypernerf/default.py
+python render_4dgs.py --model_path "output/hypernerf/split-cookie/" --skip_train --skip_test --configs arguments/hypernerf/default.py
+python train_ie.py -s ./data/hypernerf/split-cookie/ -m ./output/hypernerf/split-cookie/ --configs arguments/hypernerf/default.py
+python render_ie.py --model_path "output/hypernerf/split-cookie/"  --skip_train --skip_test --configs arguments/hypernerf/default.py
+
+# broom2
+# python train_4dgs.py -s ./data/hypernerf/broom2/ --port 6017 --expname "hypernerf/broom2" --configs arguments/hypernerf/broom2.py
+# python render_4dgs.py --model_path "output/hypernerf/broom2/" --skip_train --skip_test --configs arguments/hypernerf/broom2.py
+
+# oven-mitts
+python train_4dgs.py -s ./data/hypernerf/oven-mitts/ --port 6017 --expname "hypernerf/oven-mitts" --configs arguments/hypernerf/default.py
+python render_4dgs.py --model_path "output/hypernerf/oven-mitts/" --skip_train --skip_test --configs arguments/hypernerf/default.py
+python train_ie.py -s ./data/hypernerf/oven-mitts/ -m ./output/hypernerf/oven-mitts/ --configs arguments/hypernerf/default.py
+python render_ie.py --model_path "output/hypernerf/oven-mitts/"  --skip_train --skip_test --configs arguments/hypernerf/default.py
+
+# chickchicken
+python train_4dgs.py -s ./data/hypernerf/chickchicken/ --port 6017 --expname "hypernerf/chickchicken" --configs arguments/hypernerf/chicken.py
+python render_4dgs.py --model_path "output/hypernerf/chickchicken/" --skip_train --skip_test --configs arguments/hypernerf/chicken.py
+python train_ie.py -s ./data/hypernerf/chickchicken/ -m ./output/hypernerf/chickchicken/ --configs arguments/hypernerf/chicken.py 
+python render_ie.py --model_path "output/hypernerf/chickchicken/" --skip_train --skip_test --configs arguments/hypernerf/chicken.py
+
+#keyboard
+python train_4dgs.py -s ./data/hypernerf/keyboard/ --port 6017 --expname "hypernerf/keyboard" --configs arguments/hypernerf/keyboard.py
+python render_4dgs.py --model_path "output/hypernerf/keyboard/" --skip_train --skip_test --configs arguments/hypernerf/keyboard.py
+python train_ie.py -s ./data/hypernerf/keyboard/ -m ./output/hypernerf/keyboard/ --configs arguments/hypernerf/keyboard.py
+python render_ie.py --model_path "output/hypernerf/keyboard/" --skip_train --skip_test --configs arguments/hypernerf/keyboard.py
+
+# banana
+python train_4dgs.py -s ./data/hypernerf/split-cookie/ --port 6017 --expname "hypernerf/split-cookie" --configs arguments/hypernerf/default.py
+
+# dynerf
+# cut_roasted_beef
+python ./scripts/preprocess_dynerf.py --datadir data/dynerf/cut_roasted_beef
+bash colmap.sh data/dynerf/cut_roasted_beef llff
+python scripts/downsample_point.py data/dynerf/cut_roasted_beef/colmap/dense/workspace/fused.ply data/dynerf/cut_roasted_beef/points3D_downsample2.ply
+python train_4dgs.py -s data/dynerf/cut_roasted_beef --port 6017 --expname "dynerf/cut_roasted_beef" --configs arguments/dynerf/cut_roasted_beef.py
+python train_ie.py -s ./data/dynerf/cut_roasted_beef/ -m ./output/dynerf/cut_roasted_beef/ --configs arguments/dynerf/cut_roasted_beef.py
+python render_ie.py --model_path "output/dynerf/cut_roasted_beef/" --skip_test --configs arguments/dynerf/cut_roasted_beef.py
+bash run_binary.sh ../data/dynerf/cut_roasted_beef/ ./output/dynerf/cut_roasted_beef/ arguments/dynerf/cut_roasted_beef.py 0
