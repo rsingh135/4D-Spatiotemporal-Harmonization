@@ -7,6 +7,7 @@ This project is obtained by organizing and supplementing the unorganized code ba
 git submodule update --init --recursive
 conda create -n sa4d python=3.9
 conda activate sa4d
+In our environment, we use pytorch=2.0.1+cu118.
 conda install -c conda-forge colmap
 
 pip install -r requirements.txt
@@ -23,7 +24,7 @@ cd Grounded-Segment-Anything
 pip install -e .
 cd ../..
 
-In our environment, we use pytorch=2.0.1+cu118.
+
 ```
 
 ## Training
