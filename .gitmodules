@@ -1,0 +1,3 @@
+[submodule "Tracking-Anything-with-DEVA/Grounded-Segment-Anything"]
+	path = Tracking-Anything-with-DEVA/Grounded-Segment-Anything
+	url = "https://github.com/IDEA-Research/Grounded-Segment-Anything#"
