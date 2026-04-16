@@ -9,7 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 import os, sys
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import imageio
 import numpy as np
 import torch
@@ -48,7 +48,7 @@ def multithread_write(image_list, path):
     
 to8b = lambda x : (255*np.clip(x.cpu().numpy(),0,1)).astype(np.uint8)
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background, cam_type):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, cam_type, video_output=None):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
     gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
 
@@ -92,22 +92,29 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     multithread_write(render_list, render_path)
 
     
-    imageio.mimwrite(os.path.join(model_path, name, "ours_{}".format(iteration), 'video_rgb.mp4'), render_images, fps=30)
+    if video_output is None:
+        video_output = os.path.join(model_path, name, "ours_{}".format(iteration), 'video_rgb.mp4')
+    makedirs(os.path.dirname(video_output), exist_ok=True)
+    imageio.mimwrite(video_output, render_images, fps=30)
+    print(f"Video saved to {video_output}")
     
-def render_sets(dataset : ModelParams, hyperparam, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, skip_video: bool, mode: str):
+def render_sets(dataset : ModelParams, hyperparam, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, skip_video: bool, mode: str, ply_path: str = None, video_output: str = None):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, mode, hyperparam)
         scene = Scene(dataset, gaussians, load_iteration=iteration, mode=mode, shuffle=False)
+        if ply_path is not None:
+            print(f"Overriding PLY with: {ply_path}")
+            gaussians.load_ply(ply_path)
         cam_type = scene.dataset_type
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
         if not skip_train:
-            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background,cam_type)
+            render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, cam_type, video_output=video_output)
         if not skip_test:
-            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background,cam_type)
+            render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, cam_type, video_output=video_output)
         if not skip_video:
-            render_set(dataset.model_path,"video",scene.loaded_iter,scene.getVideoCameras(),gaussians,pipeline,background,cam_type)
+            render_set(dataset.model_path, "video", scene.loaded_iter, scene.getVideoCameras(), gaussians, pipeline, background, cam_type, video_output=video_output)
             
 if __name__ == "__main__":
     # Set up command line argument parser
@@ -122,6 +129,8 @@ if __name__ == "__main__":
     parser.add_argument("--skip_video", action="store_true")
     parser.add_argument("--configs", type=str)
     parser.add_argument("--mode", type=str, default="scene")
+    parser.add_argument("--ply_path", type=str, default=None, help="Override which .ply file to render")
+    parser.add_argument("--video_output", type=str, default=None, help="Override output video path")
     args = get_combined_args(parser)
     print("Rendering " , args.model_path)
     if args.configs:
@@ -132,4 +141,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), hyperparam.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.skip_video, args.mode)
+    render_sets(model.extract(args), hyperparam.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.skip_video, args.mode, ply_path=getattr(args, 'ply_path', None), video_output=getattr(args, 'video_output', None))

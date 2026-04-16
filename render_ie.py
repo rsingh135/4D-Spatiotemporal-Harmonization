@@ -7,8 +7,9 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 
 import os, sys
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import torch
+torch.cuda.init()
 from scene import Scene
 from tqdm import tqdm
 from os import makedirs

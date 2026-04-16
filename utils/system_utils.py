@@ -24,5 +24,20 @@ def mkdir_p(folder_path):
             raise
 
 def searchForMaxIteration(folder):
-    saved_iters = [int(fname.split("_")[-1]) for fname in os.listdir(folder)]
+    saved_iters = []
+    for fname in os.listdir(folder):
+        # Only accept entries like iteration_3000 (ignore .ply, .pth, etc.)
+        if not fname.startswith("iteration_"):
+            continue
+        suffix = fname.split("_")[-1]
+        if not suffix.isdigit():
+            continue
+        saved_iters.append(int(suffix))
+
+    if not saved_iters:
+        raise FileNotFoundError(
+            f"No iteration_* entries found in '{folder}'. "
+            "Expected entries like 'iteration_3000'."
+        )
+
     return max(saved_iters)

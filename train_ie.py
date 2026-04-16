@@ -8,6 +8,8 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
+import torch
+torch.cuda.init()
 import numpy as np
 import random
 import os, sys
