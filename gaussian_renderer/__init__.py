@@ -84,13 +84,27 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     if "coarse" in stage:
         means3D_final, scales_final, rotations_final, opacity_final, shs_final = means3D, scales, rotations, opacity, shs
     elif "fine" in stage:
-        # time0 = get_time()
-        # means3D_deform, scales_deform, rotations_deform, opacity_deform = pc._deformation(means3D[deformation_point], scales[deformation_point], 
-        #                                                                  rotations[deformation_point], opacity[deformation_point],
-        #                                                                  time[deformation_point])
-        means3D_final, scales_final, rotations_final, opacity_final, shs_final = pc._deformation(means3D, scales, 
-                                                                 rotations, opacity, shs,
-                                                                 time)
+        # Check if some gaussians should skip deformation (e.g. inserted foreground)
+        if deformation_point is not None and not deformation_point.all():
+            # Split: deform only gaussians where _deformation_table is True
+            dp = deformation_point.bool()
+            means3D_final = means3D.clone()
+            scales_final = scales.clone()
+            rotations_final = rotations.clone()
+            opacity_final = opacity.clone()
+            shs_final = shs.clone()
+            if dp.any():
+                m_d, s_d, r_d, o_d, sh_d = pc._deformation(
+                    means3D[dp], scales[dp], rotations[dp], opacity[dp], shs[dp], time[dp])
+                means3D_final[dp] = m_d
+                scales_final[dp] = s_d
+                rotations_final[dp] = r_d
+                opacity_final[dp] = o_d
+                shs_final[dp] = sh_d
+        else:
+            # All gaussians go through deformation (original behavior)
+            means3D_final, scales_final, rotations_final, opacity_final, shs_final = pc._deformation(
+                means3D, scales, rotations, opacity, shs, time)
     else:
         raise NotImplementedError
 
@@ -106,9 +120,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     #     new_opacity[filtered_mask, :] = -1.
     #     opacity = new_opacity
         
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
-    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
-    # shs = None
+    # Exactly one of SHs or precomputed colors must be passed to the rasterizer.
     colors_precomp = None
     if override_color is None:
         if pipe.convert_SHs_python:
@@ -119,9 +131,11 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
             pass
-            # shs = 
     else:
         colors_precomp = override_color
+
+    if colors_precomp is not None:
+        shs_final = None
 
     mask = torch.zeros((means3D_final.shape[0], 1), dtype=torch.float, device="cuda") if override_mask is None else override_mask
     # mask = pc.get_mask if override_mask is None else override_mask
@@ -225,9 +239,7 @@ def render_segmentation(viewpoint_camera, pc : GaussianModel, pipe, bg_color : t
     rotations_final = pc.rotation_activation(rotations_final)
     opacity = pc.opacity_activation(opacity_final)
     # print(opacity.max())
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
-    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
-    # shs = None
+    # Exactly one of SHs or precomputed colors must be passed to the rasterizer.
     colors_precomp = None
     if override_color is None:
         if pipe.convert_SHs_python:
@@ -238,9 +250,11 @@ def render_segmentation(viewpoint_camera, pc : GaussianModel, pipe, bg_color : t
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
             pass
-            # shs = 
     else:
         colors_precomp = override_color
+
+    if colors_precomp is not None:
+        shs_final = None
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     # time3 = get_time()

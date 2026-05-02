@@ -159,6 +159,64 @@ your GPU (default is `"2"`, you likely want `"0"`).
 | Temporal flickering | Increase `--sigma` (e.g. `4.0`) for more smoothing |
 | Want sharper detail matching | Add `--use_lpips` |
 
+## Diagnostics, stress tests, shadows (new helpers)
+
+### Multi-view mask sanity (`export_mask_diagnostics.py`)
+
+If you see random sparkles / halos around the object, first verify whether the **projected 2D mask** is leaking or misaligned across views:
+
+```bash
+cd ~/new_sa4d/sa4d
+
+python -m pipeline.export_mask_diagnostics \
+  --model_path output/hypernerf/split-cookie \
+  --source_path data/hypernerf/split-cookie \
+  --mask_path output/hypernerf/split-cookie/segment_results/composite_inserted_choc_Bigger.pt \
+  --ply_path output/hypernerf/split-cookie/point_cloud/iteration_14000/clean_chocolate_Bigger.ply \
+  --out_dir output/hypernerf/split-cookie/mask_diag_bigger \
+  --mask_feather 0
+```
+
+Outputs per view: `[composite | mask | overlay]`.
+
+### 3D object-only lighting mismatch (`apply_object_lighting_mismatch.py`)
+
+To stress-test harmonization with a **strong mismatch baked into object SH** (not a 2D screen-space filter), generate a new PLY:
+
+```bash
+cd ~/new_sa4d/sa4d
+
+python -m pipeline.apply_object_lighting_mismatch \
+  --model_path output/hypernerf/split-cookie \
+  --source_path data/hypernerf/split-cookie \
+  --in_ply output/hypernerf/split-cookie/point_cloud/iteration_14000/clean_chocolate_Bigger.ply \
+  --mask_path output/hypernerf/split-cookie/segment_results/composite_inserted_choc_Bigger.pt \
+  --out_ply output/hypernerf/split-cookie/point_cloud/iteration_14000/clean_chocolate_Bigger_mismatch.ply \
+  --brightness 0.35 --gamma 1.6
+```
+
+Then run `pipeline/run_harmonize.py` with `--ply_path` pointing at the mismatch PLY (mask stays the same).
+
+### Learned shadow plate (`run_harmonize.py`)
+
+`pipeline/run_harmonize.py` supports an experimental learned shadow layer:
+
+- `--shadow_mode learned`
+- `--shadow_n`, `--shadow_lr`, `--shadow_reg_weight`, `--shadow_outside_weight`
+
+It optimizes extra shadow Gaussians during SH harmonization and **bakes them into the output PLY** at the end.
+
+### Separate SH learning rates
+
+You can tune coarse brightness vs directional detail separately:
+
+- `--lr_dc`
+- `--lr_rest`
+
+### Example stress commands
+
+See `scripts/stress_harmonize_examples.sh`.
+
 ## File Structure
 
 ```
@@ -168,5 +226,8 @@ sa4d/pipeline/
 ├── run_harmonize.py       ← main entry point
 ├── data_loading.py        ← load scene, mask, harmonizer
 ├── precompute_targets.py  ← render views, predict harmonization targets
-└── optimize_sh.py         ← backprop delta_sh through rasterizer
+├── optimize_sh.py         ← backprop delta_sh (+ optional learned shadow) through rasterizer
+├── export_mask_diagnostics.py
+├── apply_object_lighting_mismatch.py
+└── single_frame_harmonize_test.py
 ```

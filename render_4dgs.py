@@ -98,13 +98,19 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     imageio.mimwrite(video_output, render_images, fps=30)
     print(f"Video saved to {video_output}")
     
-def render_sets(dataset : ModelParams, hyperparam, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, skip_video: bool, mode: str, ply_path: str = None, video_output: str = None):
+def render_sets(dataset : ModelParams, hyperparam, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, skip_video: bool, mode: str, ply_path: str = None, video_output: str = None, mask_path: str = None, composite: bool = False):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, mode, hyperparam)
         scene = Scene(dataset, gaussians, load_iteration=iteration, mode=mode, shuffle=False)
         if ply_path is not None:
             print(f"Overriding PLY with: {ply_path}")
             gaussians.load_ply(ply_path)
+        if composite and mask_path is not None:
+            mask_data = torch.load(mask_path, map_location='cuda')
+            fg_mask = mask_data['mask_table'].any(dim=0).bool()
+            gaussians._deformation_table = ~fg_mask
+            n_static = fg_mask.sum().item()
+            print(f"Composite mode: {(~fg_mask).sum().item()} deformed, {n_static} static (foreground skip deformation)")
         cam_type = scene.dataset_type
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -130,6 +136,8 @@ if __name__ == "__main__":
     parser.add_argument("--configs", type=str)
     parser.add_argument("--mode", type=str, default="scene")
     parser.add_argument("--ply_path", type=str, default=None, help="Override which .ply file to render")
+    parser.add_argument("--mask_path", type=str, default=None, help="Mask .pt file — used with --composite to skip deformation on foreground")
+    parser.add_argument("--composite", action="store_true", help="Composite mode: foreground gaussians (from mask) skip deformation")
     parser.add_argument("--video_output", type=str, default=None, help="Override output video path")
     args = get_combined_args(parser)
     print("Rendering " , args.model_path)
@@ -141,4 +149,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), hyperparam.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.skip_video, args.mode, ply_path=getattr(args, 'ply_path', None), video_output=getattr(args, 'video_output', None))
+    render_sets(model.extract(args), hyperparam.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.skip_video, args.mode, ply_path=getattr(args, 'ply_path', None), video_output=getattr(args, 'video_output', None), mask_path=getattr(args, 'mask_path', None), composite=getattr(args, 'composite', False))

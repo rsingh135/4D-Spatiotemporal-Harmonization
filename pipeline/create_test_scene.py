@@ -154,6 +154,58 @@ def effect_underexposed(gaussians, mask, s):
     return f"DC {dark.tolist()} + higher-order amplified by {50*s:.0f}%"
 
 
+def effect_indoor_outdoor(gaussians, mask, s):
+    """Simulate indoor object placed in outdoor scene.
+
+    Combines: warm color shift (indoor tungsten) + reduced contrast
+    (indoor has less dynamic range than outdoor) + wrong light direction.
+    This creates the most harmonizer-visible mismatch because it affects
+    color statistics, contrast, AND directionality simultaneously.
+    """
+    # Warm tungsten tint
+    warm = torch.tensor([0.4, 0.15, -0.3], device='cuda') * s
+    gaussians._features_dc.data[mask] += warm.view(1, 1, 3)
+    # Reduce contrast (indoor = flatter lighting)
+    gaussians._features_rest.data[mask] *= max(0.1, 1.0 - 0.5 * s)
+    # Flip light direction
+    gaussians._features_rest.data[mask, 0:3, :] *= -1.0
+    return f"Indoor→outdoor: warm DC {warm.tolist()}, contrast reduced {50*s:.0f}%, light flipped"
+
+
+def effect_outdoor_indoor(gaussians, mask, s):
+    """Simulate outdoor object placed in indoor scene.
+
+    Combines: cool color shift (daylight) + boosted contrast + harsh
+    directional component. Opposite of indoor_outdoor.
+    """
+    cool = torch.tensor([-0.2, -0.05, 0.35], device='cuda') * s
+    gaussians._features_dc.data[mask] += cool.view(1, 1, 3)
+    # Boost contrast (outdoor has harsher shadows)
+    gaussians._features_rest.data[mask] *= (1.0 + 0.4 * s)
+    # Add strong directional bias
+    gaussians._features_rest.data[mask, 0, :] += 0.5 * s
+    gaussians._features_rest.data[mask, 2, :] += 0.3 * s
+    return f"Outdoor→indoor: cool DC {cool.tolist()}, contrast boosted {40*s:.0f}%, directional bias added"
+
+
+def effect_full_mismatch(gaussians, mask, s):
+    """Maximum lighting mismatch — hits every SH order aggressively.
+
+    DC: strong color shift. Order 1: flipped + amplified. Order 2-3: randomized.
+    Designed to produce the most visually obvious before/after for the harmonizer.
+    """
+    # Strong DC shift
+    shift = torch.tensor([0.6, -0.3, -0.4], device='cuda') * s
+    gaussians._features_dc.data[mask] += shift.view(1, 1, 3)
+    # Flip and amplify 1st order (light direction)
+    gaussians._features_rest.data[mask, 0:3, :] *= -1.5 * s
+    # Scramble 2nd order (soft shadows)
+    gaussians._features_rest.data[mask, 3:8, :] *= -0.8 * s
+    # Dampen 3rd order (specular)
+    gaussians._features_rest.data[mask, 8:15, :] *= 0.2
+    return f"Full mismatch: DC {shift.tolist()}, O1 flipped×{1.5*s:.1f}, O2 scrambled, O3 dampened"
+
+
 EFFECTS = {
     # DC-only (color/brightness shifts)
     'dark':             effect_dark,
@@ -170,6 +222,10 @@ EFFECTS = {
     'harsh_shadow':     effect_harsh_shadow,
     'overexposed':      effect_overexposed,
     'underexposed':     effect_underexposed,
+    # Scene transfer (most harmonizer-visible)
+    'indoor_outdoor':   effect_indoor_outdoor,
+    'outdoor_indoor':   effect_outdoor_indoor,
+    'full_mismatch':    effect_full_mismatch,
 }
 
 
@@ -207,6 +263,8 @@ Effects and what SH orders they modify:
                         help='Apply effect to the masked object (foreground) or everything else (background)')
     parser.add_argument('--iteration', type=int, default=-1)
     parser.add_argument('--configs', type=str, default=None)
+    parser.add_argument('--ply_path', type=str, default=None,
+                        help='Override which .ply file to load (e.g. a composite PLY)')
     args = parser.parse_args()
 
     from pipeline.data_loading import load_scene, load_mask_table, get_object_mask
@@ -215,6 +273,9 @@ Effects and what SH orders they modify:
     gaussians, scene, pipe, bg = load_scene(
         args.model_path, args.source_path,
         iteration=args.iteration, configs=args.configs)
+    if args.ply_path is not None:
+        print(f"Overriding PLY with: {args.ply_path}")
+        gaussians.load_ply(args.ply_path)
     mask_data = load_mask_table(args.mask_path)
     object_mask = get_object_mask(mask_data)
 

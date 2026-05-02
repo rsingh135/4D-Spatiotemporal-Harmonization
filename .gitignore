@@ -11,11 +11,12 @@ venv/
 .DS_Store
 .vscode/
 
-# Large / generated artifacts (adjust as needed)
+# Large / generated artifacts
 output/
 outputs/
 point_cloud/
 point_clouds/
+data/
 *.pt
 *.pth
 *.ckpt
@@ -23,26 +24,16 @@ point_clouds/
 *.ply
 *.npz
 *.npy
-
-# ------------------------------------------------------------
-# Allow-list: keep small/reproducible "cache" artifacts in git
-# ------------------------------------------------------------
-# We ignore `output/` broadly, so we must un-ignore the directory
-# chain before we can un-ignore specific files within it.
-!output/
-!output/hypernerf/
-!output/hypernerf/**/
-
-# Mask tables used for compositing / harmonization
-!output/hypernerf/**/segment_results/
-!output/hypernerf/**/segment_results/*.pt
-
-# Composite export PLYs (useful checkpoints)
-!output/hypernerf/split-cookie/point_cloud/
-!output/hypernerf/split-cookie/point_cloud/iteration_14000/
-!output/hypernerf/split-cookie/point_cloud/iteration_14000/clean_chocolate.ply
-!output/hypernerf/split-cookie/point_cloud/iteration_14000/scene_point_cloud.ply
-!output/hypernerf/split-cookie/segment_results/composite_inserted_choc.pt
-
-# Logs
+*.png
 *.log
+
+# Compiled binaries
+*.so
+*.o
+build/
+
+# Blender
+blender*/
+
+# Mock assets
+mock_assets/
