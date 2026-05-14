@@ -69,7 +69,11 @@ def render_composite_and_mask(view, gaussians, pipe, background, mask_data, fram
 
     mask_result = render_mask(view, gaussians, pipe, background,
                               precomputed_mask=gauss_mask_float)
-    mask_2d = mask_result['mask'].unsqueeze(0).clamp(0, 1)
+    mask_2d_raw = mask_result['mask'].unsqueeze(0).clamp(0, 1)
+    # Binarize: rendered mask values can be very low (e.g. max ~0.3) when
+    # object Gaussians are semi-transparent.  Threshold at 0.01 so any pixel
+    # with meaningful object contribution is included.
+    mask_2d = (mask_2d_raw > 0.01).float()
 
     return composite, mask_2d
 
@@ -167,10 +171,11 @@ def precompute_all_targets(harmonizer, gaussians, scene, pipe, background,
         masks_2d: dict {(view_idx, frame_idx): tensor [1, 1, H, W]}
     """
     from pipeline.data_loading import time_to_frame_idx
-    from pipeline.harmonizer_base import HarmonizerBase
+    from pipeline.harmonizer_base import HarmonizerBase, SceneBHarmonizer
 
     views = scene.getTrainCameras() if use_train_cams else scene.getTestCameras()
-    use_abstraction = isinstance(harmonizer, HarmonizerBase)
+    use_scene_b = isinstance(harmonizer, SceneBHarmonizer)
+    use_abstraction = isinstance(harmonizer, HarmonizerBase) and not use_scene_b
 
     # ── Step 1: Render composites + masks ──
     print("[precompute] Step 1: Rendering composites and masks...")
@@ -192,7 +197,22 @@ def precompute_all_targets(harmonizer, gaussians, scene, pipe, background,
     if amplify != 1.0:
         print(f"[precompute] Amplification factor: {amplify}x")
 
-    if use_abstraction:
+    if use_scene_b:
+        # Load ground-truth Scene B images directly as targets
+        split = 'train' if use_train_cams else 'test'
+        print(f"[precompute] Step 2: Loading Scene B images as targets ({split})...")
+        targets = {}
+        for (v_idx, f_idx), comp in tqdm(composites.items(), desc="Loading Scene B"):
+            view = views[v_idx]
+            view_name = f"{split}/r_{view.image_name}"
+            H, W = comp.shape[2], comp.shape[3]
+            raw_target = harmonizer.get_target_for_view(view_name, H, W)
+            if amplify != 1.0:
+                target = (comp + amplify * (raw_target - comp)).clamp(0, 1)
+            else:
+                target = raw_target
+            targets[(v_idx, f_idx)] = target
+    elif use_abstraction:
         # New path: direct harmonize() call per view
         print("[precompute] Step 2: Generating targets via harmonizer.harmonize()...")
         targets = {}

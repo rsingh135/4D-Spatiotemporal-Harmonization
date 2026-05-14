@@ -1,0 +1,20 @@
+v5 Dynamic Scene: Breakdancer Relighting (animated object)
+======================================================================
+Scene A: breakdancer under forest.hdr (wrong lighting), cat+bg under suburban_garden
+Scene B: everything under suburban_garden (ground truth)
+Breakdancer mask: 8584 / 221281 gaussians (spatial proximity)
+Harmonizer: scene_b mode, 500 iterations, lr=0.01
+Training: joint_dynamic_50k.py, 50K iterations per scene
+
+Method                       PSNR (dB)    SSIM     LPIPS
+--------------------------------------------------------------
+Original A                      18.566   0.8840    0.3369
+Harmonized (optim)              19.946   0.8632    0.3805
+
+Delta (harmonized - original)   +1.380   -0.0208   +0.0436
+
+Note: PSNR improved +1.38 dB. SSIM/LPIPS degraded slightly — the harmonized
+breakdancer became somewhat transparent/ghostly (visible in comparisons).
+This suggests the optimization overfit or needs regularization tuning.
+The breakdancer is an animated deforming object, making this a harder test
+than the static cat.

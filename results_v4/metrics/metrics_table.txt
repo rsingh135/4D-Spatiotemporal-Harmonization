@@ -1,0 +1,26 @@
+Model                                     PSNR     SSIM    LPIPS
+=================================================================
+--- v3 ---
+  v3/dynamic_A                          27.907   0.9816   0.0734
+  v3/dynamic_A_harm                     27.469   0.9810   0.0768
+  v3/dynamic_B                          32.975   0.9747   0.2048
+  v3/static_A                           31.440   0.9896   0.0487
+  v3/static_A_harm                      28.089   0.9876   0.0537
+  v3/static_B                           39.228   0.9897   0.1670
+
+--- v4 ---
+  v4/dynamic_A                          20.707   0.9337   0.1511
+  v4/dynamic_A_harm                     19.471   0.9265   0.1775
+  v4/dynamic_B                          20.192   0.9117   0.2571
+  v4/static_A                           19.581   0.9044   0.1875
+  v4/static_A_harm                      19.071   0.9008   0.2009
+  v4/static_B                           18.430   0.8855   0.2865
+
+--- v5 ---
+  v5/dynamic_A                          19.216   0.8915   0.1829
+  v5/dynamic_A_band_reg                 17.687   0.8809   0.2338
+  v5/dynamic_A_dc_only                  17.771   0.8831   0.2214
+  v5/dynamic_A_harm_allband             17.593   0.8697   0.2624
+  v5/dynamic_A_sep_lr                   17.772   0.8834   0.2206
+  v5/dynamic_B                          18.522   0.8813   0.2817
+

@@ -116,14 +116,70 @@ class PCTNetHarmonizer(HarmonizerBase):
         return out_tensor.clamp(0, 1)
 
 
+class SceneBHarmonizer(HarmonizerBase):
+    """Use pre-rendered Scene B (ground truth) images directly as targets.
+
+    Instead of running a neural harmonizer, this loads the corresponding
+    Scene B image for each view.  The Scene B directory must have the same
+    file layout as Scene A (transforms_train.json with file_path entries
+    like ``./train/r_0``).
+    """
+
+    def __init__(self, scene_b_dir):
+        from PIL import Image as _Image
+        self._Image = _Image
+        self.scene_b_dir = os.path.abspath(scene_b_dir)
+        # Build index: filename stem -> full path
+        self._images = {}
+        for split in ('train', 'test'):
+            d = os.path.join(self.scene_b_dir, split)
+            if not os.path.isdir(d):
+                continue
+            for fn in os.listdir(d):
+                if fn.endswith('.png'):
+                    stem = os.path.splitext(fn)[0]  # e.g. "r_0"
+                    self._images[(split, stem)] = os.path.join(d, fn)
+        print(f"[harmonizer] SceneBHarmonizer: indexed {len(self._images)} "
+              f"images from {self.scene_b_dir}")
+
+    def get_target_for_view(self, view_name, H, W):
+        """Load the Scene B image matching a view name like 'train/r_0'."""
+        # view_name can be './train/r_0' or 'train/r_0' etc.
+        name = view_name.lstrip('./')
+        parts = name.split('/')
+        if len(parts) == 2:
+            split, stem = parts
+        else:
+            split, stem = 'train', parts[-1]
+        stem = os.path.splitext(stem)[0]
+
+        key = (split, stem)
+        if key not in self._images:
+            raise FileNotFoundError(
+                f"Scene B image not found for {key}. "
+                f"Available: {list(self._images.keys())[:5]}...")
+
+        img = self._Image.open(self._images[key]).convert('RGB')
+        img = img.resize((W, H), self._Image.LANCZOS)
+        arr = np.array(img, dtype=np.float32) / 255.0
+        tensor = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).cuda()
+        return tensor.clamp(0, 1)
+
+    def harmonize(self, composite, mask_2d):
+        raise NotImplementedError(
+            "SceneBHarmonizer requires view names — use "
+            "precompute_all_targets with harmonizer='scene_b' instead.")
+
+
 def create_harmonizer(backend='whitebox', weights_path=None, **kwargs):
     """
     Factory function to create a harmonizer.
 
     Args:
-        backend:      "whitebox" or "pctnet"
+        backend:      "whitebox", "pctnet", or "scene_b"
         weights_path: path to pretrained weights (None = default location)
         **kwargs:     extra args passed to the harmonizer constructor
+                      For scene_b: scene_b_dir=<path to scene_B/>
 
     Returns:
         HarmonizerBase instance
@@ -132,6 +188,11 @@ def create_harmonizer(backend='whitebox', weights_path=None, **kwargs):
         return WhiteboxHarmonizer(weights_path=weights_path)
     elif backend == 'pctnet':
         return PCTNetHarmonizer(weights_path=weights_path, **kwargs)
+    elif backend == 'scene_b':
+        scene_b_dir = kwargs.get('scene_b_dir')
+        if not scene_b_dir:
+            raise ValueError("scene_b backend requires scene_b_dir=<path>")
+        return SceneBHarmonizer(scene_b_dir)
     else:
         raise ValueError(f"Unknown harmonizer backend: {backend!r}. "
-                         f"Choose from: 'whitebox', 'pctnet'")
+                         f"Choose from: 'whitebox', 'pctnet', 'scene_b'")

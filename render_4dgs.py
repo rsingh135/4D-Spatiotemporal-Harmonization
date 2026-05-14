@@ -10,7 +10,6 @@
 #
 import os, sys
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-import imageio
 import numpy as np
 import torch
 from scene import Scene
@@ -47,6 +46,18 @@ def multithread_write(image_list, path):
             write_image(image_list[index], index, path)
     
 to8b = lambda x : (255*np.clip(x.cpu().numpy(),0,1)).astype(np.uint8)
+
+def render_single_train_view(gaussians, pipeline, background, cam_type, train_dataset, train_idx, out_png):
+    """Render exactly one training camera and save a single PNG (for snapshot PLY / comparisons)."""
+    n = len(train_dataset)
+    if train_idx < 0 or train_idx >= n:
+        raise IndexError(f"train_idx={train_idx} out of range for {n} training views")
+    view = train_dataset[train_idx]
+    makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
+    with torch.no_grad():
+        rendering = render(view, gaussians, pipeline, background, cam_type=cam_type)["render"]
+    torchvision.utils.save_image(rendering, out_png)
+    print(f"Saved training view {train_idx} to {out_png}")
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background, cam_type, video_output=None):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
@@ -95,16 +106,26 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
     if video_output is None:
         video_output = os.path.join(model_path, name, "ours_{}".format(iteration), 'video_rgb.mp4')
     makedirs(os.path.dirname(video_output), exist_ok=True)
+    try:
+        import imageio  # lazy import: only needed when writing videos
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "Missing dependency 'imageio'. Install it (e.g. `pip install imageio`) or run with --skip_video."
+        ) from e
     imageio.mimwrite(video_output, render_images, fps=30)
     print(f"Video saved to {video_output}")
     
-def render_sets(dataset : ModelParams, hyperparam, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, skip_video: bool, mode: str, ply_path: str = None, video_output: str = None, mask_path: str = None, composite: bool = False):
+def render_sets(dataset : ModelParams, hyperparam, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, skip_video: bool, mode: str, ply_path: str = None, video_output: str = None, mask_path: str = None, composite: bool = False, snapshot_ply: bool = False, train_idx: int = None, train_image_output: str = None):
     with torch.no_grad():
         gaussians = GaussianModel(dataset.sh_degree, mode, hyperparam)
         scene = Scene(dataset, gaussians, load_iteration=iteration, mode=mode, shuffle=False)
         if ply_path is not None:
             print(f"Overriding PLY with: {ply_path}")
             gaussians.load_ply(ply_path)
+        if snapshot_ply:
+            n = gaussians.get_xyz.shape[0]
+            gaussians._deformation_table = torch.zeros((n,), dtype=torch.bool, device="cuda")
+            print(f"snapshot_ply: disabled timestep deformation for {n} Gaussians (_deformation_table all False)")
         if composite and mask_path is not None:
             mask_data = torch.load(mask_path, map_location='cuda')
             fg_mask = mask_data['mask_table'].any(dim=0).bool()
@@ -115,7 +136,11 @@ def render_sets(dataset : ModelParams, hyperparam, iteration : int, pipeline : P
         bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
-        if not skip_train:
+        if train_idx is not None:
+            if train_image_output is None:
+                raise ValueError("train_image_output is required when train_idx is set")
+            render_single_train_view(gaussians, pipeline, background, cam_type, scene.getTrainCameras(), train_idx, train_image_output)
+        elif not skip_train:
             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background, cam_type, video_output=video_output)
         if not skip_test:
             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background, cam_type, video_output=video_output)
@@ -139,6 +164,9 @@ if __name__ == "__main__":
     parser.add_argument("--mask_path", type=str, default=None, help="Mask .pt file — used with --composite to skip deformation on foreground")
     parser.add_argument("--composite", action="store_true", help="Composite mode: foreground gaussians (from mask) skip deformation")
     parser.add_argument("--video_output", type=str, default=None, help="Override output video path")
+    parser.add_argument("--snapshot_ply", action="store_true", help="After --ply_path load, disable 4D deformation so the PLY is rendered as a static snapshot")
+    parser.add_argument("--train_idx", type=int, default=None, help="If set, render only this training camera index and save --train_image_output (skips full train set / video path)")
+    parser.add_argument("--train_image_output", type=str, default=None, help="Output PNG path when --train_idx is set")
     args = get_combined_args(parser)
     print("Rendering " , args.model_path)
     if args.configs:
@@ -149,4 +177,4 @@ if __name__ == "__main__":
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
-    render_sets(model.extract(args), hyperparam.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.skip_video, args.mode, ply_path=getattr(args, 'ply_path', None), video_output=getattr(args, 'video_output', None), mask_path=getattr(args, 'mask_path', None), composite=getattr(args, 'composite', False))
+    render_sets(model.extract(args), hyperparam.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.skip_video, args.mode, ply_path=getattr(args, 'ply_path', None), video_output=getattr(args, 'video_output', None), mask_path=getattr(args, 'mask_path', None), composite=getattr(args, 'composite', False), snapshot_ply=getattr(args, "snapshot_ply", False), train_idx=getattr(args, "train_idx", None), train_image_output=getattr(args, "train_image_output", None))

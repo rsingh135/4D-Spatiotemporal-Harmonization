@@ -320,14 +320,25 @@ def render_with_delta_sh(view, gaussians, pipe, background,
     return rendered_image  # [3, H, W]
 
 
+def _ssim_loss(img1, img2, window_size=11):
+    """Compute 1 - SSIM between two [3,H,W] tensors (differentiable)."""
+    from utils.loss_utils import ssim as _ssim_fn
+    return 1.0 - _ssim_fn(img1.float().unsqueeze(0), img2.float().unsqueeze(0))
+
+
 def train_step(view_idx, frame_idx, view, gaussians, pipe, background,
                delta_sh_dc, delta_sh_rest, object_mask, optimizer,
                targets, masks_2d, reg_weight=0.01, lpips_fn=None, lpips_weight=0.1,
+               ssim_weight=0.0,
                shadow_pack=None, shadow_optimizer=None,
                shadow_reg_weight=0.01, shadow_outside_weight=0.05,
-               mask_core_erode_px: int = 0,
-               mask_boundary_weight: float = 0.25,
-               mask_weight_power: float = 1.0):
+        mask_core_erode_px: int = 0,
+        mask_boundary_weight: float = 0.25,
+        mask_weight_power: float = 1.0,
+        transsplat_ref_dc=None, transsplat_ref_rest=None,
+        transsplat_sh_loss_weight: float = 0.0,
+        lambda_sh_band: float = 0.0,
+        sh_band_l_max: int = 3):
     """
     One optimization step: render, compute loss, backprop.
 
@@ -344,6 +355,10 @@ def train_step(view_idx, frame_idx, view, gaussians, pipe, background,
         reg_weight:          L2 regularization weight on delta_sh
         lpips_fn:            optional LPIPS loss function
         lpips_weight:        weight for LPIPS loss
+        transsplat_ref_dc/rest: detached Phase-2 reference SH on object (optional).
+        transsplat_sh_loss_weight: weight for MSE vs that reference.
+        lambda_sh_band: weight for band-structured L2 on delta_sh_rest.
+        sh_band_l_max: max SH degree for band regularizer.
 
     Returns:
         loss_val: float, the total loss value
@@ -399,9 +414,29 @@ def train_step(view_idx, frame_idx, view, gaussians, pipe, background,
         ).mean()
         total_loss = total_loss + lpips_weight * loss_lpips
 
+    # Optional SSIM loss (structural similarity)
+    if ssim_weight and float(ssim_weight) > 0:
+        loss_ssim = _ssim_loss(masked_rendered, masked_target)
+        total_loss = total_loss + float(ssim_weight) * loss_ssim
+
     # Regularization: prevent delta_sh from growing too large
     reg_loss = reg_weight * (delta_sh_dc.pow(2).mean() + delta_sh_rest.pow(2).mean())
     total_loss = total_loss + reg_loss
+
+    # TranSplat Phase-2 reference SH prior (object Gaussians only, detached reference)
+    if transsplat_sh_loss_weight and float(transsplat_sh_loss_weight) > 0.0 and transsplat_ref_dc is not None and transsplat_ref_rest is not None:
+        base_dc = gaussians._features_dc[object_mask].detach()
+        base_rest = gaussians._features_rest[object_mask].detach()
+        pred_dc = base_dc + delta_sh_dc
+        pred_rest = base_rest + delta_sh_rest
+        loss_ts = (pred_dc - transsplat_ref_dc).pow(2).mean() + (pred_rest - transsplat_ref_rest).pow(2).mean()
+        total_loss = total_loss + float(transsplat_sh_loss_weight) * loss_ts
+
+    # Band-weighted SH residual (TranSplat-style emphasis on higher-frequency bands)
+    if lambda_sh_band and float(lambda_sh_band) > 0.0:
+        from pipeline.transsplat_harmonize_bridge import band_weighted_delta_rest_regularizer
+        total_loss = total_loss + float(lambda_sh_band) * band_weighted_delta_rest_regularizer(
+            delta_sh_rest, int(sh_band_l_max))
 
     # Shadow regularizers (keep subtle + discourage energy outside object mask)
     if shadow_pack is not None:
@@ -423,6 +458,7 @@ def optimize(gaussians, scene, pipe, background, mask_data,
              targets, composites, masks_2d,
              num_iterations=500, lr=1e-3, lr_dc=None, lr_rest=None, reg_weight=0.01,
              use_lpips=False, lpips_weight=0.1,
+             ssim_weight=0.0,
              log_interval=50,
              shadow_mode: str = "off",
              shadow_n: int = 2048,
@@ -431,7 +467,17 @@ def optimize(gaussians, scene, pipe, background, mask_data,
              shadow_outside_weight: float = 0.05,
              mask_core_erode_px: int = 0,
              mask_boundary_weight: float = 0.25,
-             mask_weight_power: float = 1.0):
+             mask_weight_power: float = 1.0,
+             transsplat_hdr_source: str = None,
+             transsplat_hdr_target: str = None,
+             transsplat_vlm_pt: str = None,
+             transsplat_skip_visibility: bool = False,
+             transsplat_sh_loss_weight: float = 0.0,
+             transsplat_warm_start: bool = False,
+             transsplat_floor_alpha: float = 0.05,
+             transsplat_tau_max: float = 3.0,
+             transsplat_num_samples: int = 1200,
+             lambda_sh_band: float = 0.0):
     """
     Full SH optimization loop.
 
@@ -452,6 +498,11 @@ def optimize(gaussians, scene, pipe, background, mask_data,
         use_lpips:      whether to use perceptual loss
         lpips_weight:   weight for LPIPS
         log_interval:   print loss every N iterations
+        transsplat_hdr_source / transsplat_hdr_target: HDR env maps for TranSplat L_lm (optional).
+        transsplat_vlm_pt: precomputed V_lm; else transsplat_skip_visibility for DC-only proxy.
+        transsplat_sh_loss_weight: SH-space MSE toward TranSplat Phase-2 reference on object.
+        transsplat_warm_start: set initial ΔSH from that reference.
+        lambda_sh_band: band-weighted L2 on delta_sh_rest (higher SH bands penalized more).
 
     Returns:
         delta_sh_dc:   optimized tensor [N_object, 1, 3]
@@ -466,6 +517,65 @@ def optimize(gaussians, scene, pipe, background, mask_data,
     object_mask = get_object_mask(mask_data)
     delta_sh_dc, delta_sh_rest, optimizer, object_mask = create_delta_sh(
         gaussians, object_mask, lr=lr, lr_dc=lr_dc, lr_rest=lr_rest)
+
+    transsplat_ref_dc = None
+    transsplat_ref_rest = None
+    sh_band_l_max = int(getattr(gaussians, "max_sh_degree", 3) or 3)
+    use_ts_hdr = bool(transsplat_hdr_source) and bool(transsplat_hdr_target)
+    need_ts_ref = bool(transsplat_warm_start) or (
+        transsplat_sh_loss_weight is not None and float(transsplat_sh_loss_weight) > 0.0
+    )
+    if need_ts_ref:
+        if not use_ts_hdr:
+            raise ValueError(
+                "TranSplat warm-start / SH loss requires both transsplat_hdr_source and transsplat_hdr_target."
+            )
+        from pipeline import transsplat_harmonize_bridge as tsb
+
+        rep = tsb.check_transsplat_phase1_depth_support()
+        print(f"[optimize] TranSplat Phase1 depth check: {rep['message']}")
+        if not transsplat_vlm_pt and not transsplat_skip_visibility:
+            raise ValueError(
+                "TranSplat reference SH requires --transsplat_vlm_pt (precomputed V_lm) OR "
+                "--transsplat_skip_visibility (approximate unobstructed visibility). "
+                "Stock sa4d rasterizer does not expose depth for on-the-fly Phase 1."
+            )
+        device = delta_sh_dc.device
+        L_src, L_tgt, off, bundle = tsb.compute_env_sh_pair(
+            transsplat_hdr_source,
+            transsplat_hdr_target,
+            int(transsplat_num_samples),
+            sh_band_l_max,
+            device,
+        )
+        K = int(bundle["K"])
+        n_obj = int(object_mask.sum().item())
+        if n_obj <= 0:
+            raise ValueError("object_mask has no True entries; cannot run TranSplat bridge.")
+        if transsplat_vlm_pt:
+            V_lm = tsb.load_v_lm(transsplat_vlm_pt, n_obj, K, device)
+        else:
+            print("[optimize] Using unobstructed V_lm proxy (--transsplat_skip_visibility).")
+            V_lm = tsb.unobstructed_v_lm(n_obj, K, device)
+
+        transsplat_ref_dc, transsplat_ref_rest = tsb.compute_transsplat_phase2_reference_sh(
+            gaussians,
+            object_mask,
+            L_src,
+            L_tgt,
+            off,
+            bundle,
+            V_lm,
+            floor_alpha=float(transsplat_floor_alpha),
+            tau_max=float(transsplat_tau_max),
+        )
+        if transsplat_warm_start:
+            with torch.no_grad():
+                b_dc = gaussians._features_dc[object_mask].detach()
+                b_rest = gaussians._features_rest[object_mask].detach()
+                delta_sh_dc.data.copy_(transsplat_ref_dc - b_dc)
+                delta_sh_rest.data.copy_(transsplat_ref_rest - b_rest)
+            print("[optimize] Warm-started delta_sh from TranSplat Phase-2 reference SH.")
 
     shadow_pack = None
     shadow_optimizer = None
@@ -521,11 +631,17 @@ def optimize(gaussians, scene, pipe, background, mask_data,
                 delta_sh_dc, delta_sh_rest, object_mask, optimizer,
                 targets, masks_2d, reg_weight=reg_weight,
                 lpips_fn=lpips_fn, lpips_weight=lpips_weight,
+                ssim_weight=ssim_weight,
                 shadow_pack=shadow_pack, shadow_optimizer=shadow_optimizer,
                 shadow_reg_weight=shadow_reg_weight, shadow_outside_weight=shadow_outside_weight,
                 mask_core_erode_px=mask_core_erode_px,
                 mask_boundary_weight=mask_boundary_weight,
-                mask_weight_power=mask_weight_power)
+                mask_weight_power=mask_weight_power,
+                transsplat_ref_dc=transsplat_ref_dc,
+                transsplat_ref_rest=transsplat_ref_rest,
+                transsplat_sh_loss_weight=float(transsplat_sh_loss_weight or 0.0),
+                lambda_sh_band=float(lambda_sh_band or 0.0),
+                sh_band_l_max=sh_band_l_max)
 
             losses.append(loss_val)
 

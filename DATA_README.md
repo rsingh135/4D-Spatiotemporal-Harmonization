@@ -9,17 +9,26 @@ environment, using scene_B as ground truth supervision.
 
 ## Files
 
+All rendering assets live in `mock_assets/`:
+
 | File | Description |
 |------|-------------|
-| `joint_cat_breakdancer.blend` | Blender scene with breakdancer + cat positioned together |
-| `blender_export_dnerf_v4.py` | Generates camera poses (orbit) + renders, outputs transforms JSONs |
-| `render_joint_scenes.py` | Renders 3 passes per view: scene_B (GT), scene_A_bg, scene_A_cat, composites scene_A |
-| `forest.hdr` | Indoor/forest HDRI (applied to cat in scene_A) |
-| `suburban_garden_2k.hdr` | Outdoor HDRI (already in the blend file's world) |
+| `mock_assets/joint_cat_breakdancer.blend` | Blender scene with breakdancer + cat positioned together |
+| `mock_assets/blender_export_dnerf_v4.py` | Generates camera poses (orbit) + renders, outputs transforms JSONs |
+| `mock_assets/render_joint_scenes.py` | Renders 3 passes per view: scene_B (GT), scene_A_bg, scene_A_cat, composites scene_A |
+| `mock_assets/forest.hdr` | Indoor/forest HDRI (applied to cat in scene_A) |
+| `mock_assets/suburban_garden_2k.hdr` | Outdoor HDRI (already in the blend file's world) |
 
 ## Blender Setup
 
-Blender 5.1 is at: `/Applications/Blender.app/Contents/MacOS/Blender`
+Blender 5.1 is at:
+- **EC2 (Linux):** `~/new_sa4d/sa4d/blender-5.1.1-linux-x64/blender`
+- **macOS (local):** `/Applications/Blender.app/Contents/MacOS/Blender`
+
+Set the `BLENDER` env var for convenience:
+```bash
+export BLENDER=~/new_sa4d/sa4d/blender-5.1.1-linux-x64/blender
+```
 
 Key objects in the blend file:
 - `Actual_Cat` (MESH) — the cat
@@ -64,30 +73,30 @@ scene_joint_breakdance_cat/          (or dynamic_scene_joint_breakdance_cat/)
 
 **Static scene (3DGS):**
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender joint_cat_breakdancer.blend --background --python blender_export_dnerf_v4.py -- --output_dir ./scene_joint_breakdance_cat --target_objects Actual_Cat Beta_Surface --num_cameras 100 --num_test 20 --resolution 800 --static_frame 1 --radius 8.4
+$BLENDER mock_assets/joint_cat_breakdancer.blend --background --python mock_assets/blender_export_dnerf_v4.py -- --output_dir ./scene_joint_breakdance_cat --target_objects Actual_Cat Beta_Surface --num_cameras 200 --num_test 40 --resolution 800 --static_frame 1 --radius 2
 ```
 
 **Dynamic scene (4DGS):**
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender joint_cat_breakdancer.blend --background --python blender_export_dnerf_v4.py -- --output_dir ./dynamic_scene_joint_breakdance_cat --target_objects Actual_Cat Beta_Surface --num_cameras 200 --num_test 40 --resolution 800 --radius 8.4
+$BLENDER mock_assets/joint_cat_breakdancer.blend --background --python mock_assets/blender_export_dnerf_v4.py -- --output_dir ./dynamic_scene_joint_breakdance_cat --target_objects Actual_Cat Beta_Surface --num_cameras 200 --num_test 40 --resolution 800 --radius 2
 ```
 
 ### Step 2: Render the 3 passes (scene_A, scene_A_bg, scene_A_cat, scene_B)
 
 **Static scene:**
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender joint_cat_breakdancer.blend --background --python render_joint_scenes.py -- --scene_dir scene_joint_breakdance_cat
+$BLENDER mock_assets/joint_cat_breakdancer.blend --background --python mock_assets/render_joint_scenes.py -- --scene_dir scene_joint_breakdance_cat
 ```
 
 **Dynamic scene:**
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender joint_cat_breakdancer.blend --background --python render_joint_scenes.py -- --scene_dir dynamic_scene_joint_breakdance_cat
+$BLENDER mock_assets/joint_cat_breakdancer.blend --background --python mock_assets/render_joint_scenes.py -- --scene_dir dynamic_scene_joint_breakdance_cat
 ```
 
 ### Debug: Verify HDRI switching
 
 ```bash
-/Applications/Blender.app/Contents/MacOS/Blender joint_cat_breakdancer.blend --background --python render_joint_scenes.py -- --debug-hdri --scene_dir scene_joint_breakdance_cat
+$BLENDER mock_assets/joint_cat_breakdancer.blend --background --python mock_assets/render_joint_scenes.py -- --debug-hdri --scene_dir scene_joint_breakdance_cat
 ```
 
 This renders `debug_hdri/debug_outdoor.png` and `debug_hdri/debug_indoor.png` for visual comparison.
@@ -128,15 +137,8 @@ This renders `debug_hdri/debug_outdoor.png` and `debug_hdri/debug_indoor.png` fo
 
 **For rendering (if you want to re-render on GPU):**
 ```bash
-# From your local machine:
-scp -i conceptgraph.pem \
-    joint_cat_breakdancer.blend \
-    blender_export_dnerf_v4.py \
-    render_joint_scenes.py \
-    forest.hdr \
-    suburban_garden_2k.hdr \
-    README.md \
-    ubuntu@<EC2_IP>:~/rendering/
+# From your local machine — copy the mock_assets/ directory:
+scp -i conceptgraph.pem -r mock_assets/ ubuntu@<EC2_IP>:~/new_sa4d/sa4d/
 ```
 
 **For SA4D training (pre-rendered data):**
@@ -183,9 +185,9 @@ for d in prefs.devices:
     print(f'{d.name}: {d.type}')
 "
 
-# Render commands (replace /Applications/.../Blender with $BLENDER)
-$BLENDER joint_cat_breakdancer.blend --background --python blender_export_dnerf_v4.py -- --output_dir ./scene_joint_breakdance_cat --target_objects Actual_Cat Beta_Surface --num_cameras 100 --num_test 20 --resolution 800 --static_frame 1 --radius 8.4
-$BLENDER joint_cat_breakdancer.blend --background --python render_joint_scenes.py -- --scene_dir scene_joint_breakdance_cat
+# Render commands (run from sa4d/ directory)
+$BLENDER mock_assets/joint_cat_breakdancer.blend --background --python mock_assets/blender_export_dnerf_v4.py -- --output_dir ./scene_joint_breakdance_cat --target_objects Actual_Cat Beta_Surface --num_cameras 200 --num_test 40 --resolution 800 --static_frame 1 --radius 2
+$BLENDER mock_assets/joint_cat_breakdancer.blend --background --python mock_assets/render_joint_scenes.py -- --scene_dir scene_joint_breakdance_cat
 ```
 
 ## SA4D Training (on EC2)
@@ -222,11 +224,39 @@ Compare harmonized renders against scene_B (ground truth):
 python metrics.py --model_path output/joint/scene_A/
 ```
 
+## Fixes Applied (2026-05-02)
+
+Several fixes were needed to make the pipeline work on EC2:
+
+1. **Output path resolution**: Both `blender_export_dnerf_v4.py` and `render_joint_scenes.py` resolved `--output_dir` / `--scene_dir` relative to the blend file (via `bpy.path.abspath`). Fixed to use `os.path.abspath()` so paths resolve relative to the working directory, not the blend file location.
+
+2. **HDRI remapping**: The blend file had a hardcoded HDRI path (`/home/Downloads/suburban_garden_2k.hdr`). Added `remap_missing_images()` to both scripts — it scans all images in the blend and remaps missing paths to look next to the blend file in `mock_assets/`.
+
+3. **PIL dependency removed**: `render_joint_scenes.py` used PIL for compositing (scene_A = scene_A_bg + scene_A_cat). Blender's bundled Python doesn't include PIL. Replaced with numpy-based alpha compositing via `bpy.data.images`.
+
+4. **GPU rendering**: Added OPTIX/CUDA/METAL auto-detection to both scripts so Cycles uses GPU. On EC2 (A10G), OPTIX is preferred.
+
+## Generated Data (2026-05-02)
+
+Both scenes were rendered on EC2 g5.xlarge (NVIDIA A10G) with:
+- **200 train + 40 test** views each
+- **radius 2** (close orbit around cat + breakdancer midpoint)
+- **800x800** resolution, **64 samples** (Cycles)
+
+| Scene | Directory | Size (compressed) |
+|-------|-----------|-------------------|
+| Static (3DGS) | `scene_joint_breakdance_cat/` | ~729 MB |
+| Dynamic (4DGS) | `dynamic_scene_joint_breakdance_cat/` | ~729 MB |
+
+Each contains: `scene_A/`, `scene_B/`, `scene_A_bg/`, `scene_A_cat/` with 200 train + 40 test PNGs and transforms JSONs.
+
+Archives: `scene_joint_breakdance_cat.tar.gz`, `dynamic_scene_joint_breakdance_cat.tar.gz`
+
 ## Notes
 
 - The `--` separator between Blender args and script args is **required**
 - Static scenes use `--static_frame 1` to lock all views to frame 1 (no breakdancer animation)
 - Dynamic scenes omit `--static_frame`, so each camera gets a random animation frame
 - The transforms JSONs use D-NeRF format: `camera_angle_x`, `time` (0-1 normalized), `transform_matrix` (4x4 camera-to-world, NeRF/OpenGL convention)
-- Camera orbit radius ~12 (auto) was too far; ~8.4 (30% closer) works better
-- Recommended camera counts: 100 train / 20 test (3DGS), 200 train / 40 test (4DGS)
+- Radius 2 gives close-up framing of the cat + breakdancer; radius 8.4 was too far
+- Recommended camera counts: 200 train / 40 test for both 3DGS and 4DGS

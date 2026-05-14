@@ -24,6 +24,17 @@ Pipeline steps:
     5. optimize_sh.optimize()                -> backprops to SH coefficients
     6. optimize_sh.apply_delta_sh()          -> bakes delta into model
     7. optimize_sh.save_harmonized_ply()     -> writes final .ply
+
+Mask quality (segmentation): Harmonization and optional TranSplat SH priors
+operate on Gaussians selected by ``--mask_path``. Incorrect masks leak
+background into the object (and vice versa); TranSplat-style losses do not
+fix segmentation—improve ``mask_table`` / ``object_mask`` first.
+
+TranSplat bridge (optional): See ``pipeline/transsplat_harmonize_bridge.py``.
+Use HDR env maps + Phase-2 reference SH to warm-start or regularize ΔSH
+alongside the image harmonizer. Stock ``gaussian_renderer`` does not expose
+depth for on-the-fly Phase-1 visibility; pass ``--transsplat_vlm_pt`` or
+``--transsplat_skip_visibility``.
 """
 
 import os
@@ -45,7 +56,8 @@ def main():
     parser.add_argument('--source_path', type=str, required=True,
                         help='Path to source data (e.g. data/hypernerf/split-cookie)')
     parser.add_argument('--mask_path', type=str, required=True,
-                        help='Path to .pt mask table (e.g. segment_results/split-cookie.pt)')
+                        help='Per-Gaussian .pt mask (segment_results/...). Quality is critical: '
+                             'TranSplat SH priors do not repair bad segmentation.')
     parser.add_argument('--output_ply', type=str, required=True,
                         help='Output path for harmonized .ply file')
 
@@ -61,10 +73,12 @@ def main():
 
     # Harmonizer selection
     parser.add_argument('--harmonizer', type=str, default='whitebox',
-                        choices=['whitebox', 'pctnet'],
-                        help='Harmonizer backend: "whitebox" (original) or "pctnet" (PCT-Net)')
+                        choices=['whitebox', 'pctnet', 'scene_b'],
+                        help='Harmonizer backend: "whitebox", "pctnet", or "scene_b" (use GT images)')
     parser.add_argument('--harmonizer_weights', type=str, default=None,
                         help='Path to harmonizer weights (default: auto per backend)')
+    parser.add_argument('--scene_b_path', type=str, default=None,
+                        help='Path to scene_B directory (required when --harmonizer scene_b)')
 
     # Optimization params
     parser.add_argument('--num_iterations', type=int, default=500,
@@ -77,6 +91,8 @@ def main():
                         help='Add perceptual (LPIPS) loss')
     parser.add_argument('--lpips_weight', type=float, default=0.1,
                         help='Weight for LPIPS loss')
+    parser.add_argument('--ssim_weight', type=float, default=0.0,
+                        help='Weight for SSIM loss (0 = off, try 0.2)')
     parser.add_argument('--lr_dc', type=float, default=None,
                         help='Optional LR for delta_sh_dc (defaults to --lr)')
     parser.add_argument('--lr_rest', type=float, default=None,
@@ -124,6 +140,28 @@ def main():
                         help='Only precompute targets, skip SH optimization')
     parser.add_argument('--log_interval', type=int, default=50,
                         help='Print loss every N iterations')
+
+    # TranSplat ↔ harmonize bridge (optional SH lighting prior)
+    parser.add_argument('--transsplat_hdr_source', type=str, default=None,
+                        help='Source HDR/LDR env map path for TranSplat L_lm (use with --transsplat_hdr_target)')
+    parser.add_argument('--transsplat_hdr_target', type=str, default=None,
+                        help='Target HDR/LDR env map path for TranSplat L_lm')
+    parser.add_argument('--transsplat_vlm_pt', type=str, default=None,
+                        help='Precomputed V_lm .pt [N_object, K] from TranSplat Phase 1 (recommended)')
+    parser.add_argument('--transsplat_skip_visibility', action='store_true',
+                        help='Use unobstructed V_lm proxy instead of Phase 1 (approximate; no depth map)')
+    parser.add_argument('--transsplat_sh_loss_weight', type=float, default=0.0,
+                        help='Weight for MSE between (base+ΔSH) and TranSplat Phase-2 reference SH on object')
+    parser.add_argument('--transsplat_warm_start', action='store_true',
+                        help='Initialize ΔSH so base+Δ matches TranSplat Phase-2 reference before pixel optimization')
+    parser.add_argument('--transsplat_floor_alpha', type=float, default=0.05,
+                        help='TranSplat Phase-2 diffuse ratio floor (see radiance_transfer_TranSplat)')
+    parser.add_argument('--transsplat_tau_max', type=float, default=3.0,
+                        help='TranSplat Phase-2 diffuse ratio clamp tau_max')
+    parser.add_argument('--transsplat_num_samples', type=int, default=1200,
+                        help='Hemisphere samples for env map → SH projection')
+    parser.add_argument('--lambda_sh_band', type=float, default=0.0,
+                        help='TranSplat-style band-weighted L2 on delta_sh_rest (higher SH bands penalized more)')
 
     args = parser.parse_args()
 
@@ -189,7 +227,13 @@ def main():
     print(f"STEP 3: Loading Harmonizer (backend={args.harmonizer})")
     print("=" * 60)
     from pipeline.harmonizer_base import create_harmonizer
-    harmonizer = create_harmonizer(args.harmonizer, weights_path=args.harmonizer_weights)
+    extra_kwargs = {}
+    if args.harmonizer == 'scene_b':
+        if not args.scene_b_path:
+            raise ValueError("--scene_b_path is required when --harmonizer scene_b")
+        extra_kwargs['scene_b_dir'] = args.scene_b_path
+    harmonizer = create_harmonizer(args.harmonizer, weights_path=args.harmonizer_weights,
+                                   **extra_kwargs)
 
     # ----------------------------------------------------------------
     # Step 4: Precompute targets
@@ -226,6 +270,11 @@ def main():
     print("=" * 60)
     from pipeline.optimize_sh import optimize, apply_delta_sh, bake_shadow_pack_into_gaussians, save_harmonized_ply
 
+    if (args.transsplat_hdr_source or args.transsplat_hdr_target) and not (
+        args.transsplat_hdr_source and args.transsplat_hdr_target
+    ):
+        raise ValueError('Provide both --transsplat_hdr_source and --transsplat_hdr_target, or neither.')
+
     delta_sh_dc, delta_sh_rest, object_mask, losses, shadow_pack = optimize(
         gaussians, scene, pipe, background, mask_data,
         targets, composites, masks_2d,
@@ -236,6 +285,7 @@ def main():
         reg_weight=args.reg_weight,
         use_lpips=args.use_lpips,
         lpips_weight=args.lpips_weight,
+        ssim_weight=args.ssim_weight,
         log_interval=args.log_interval,
         shadow_mode=args.shadow_mode,
         shadow_n=args.shadow_n,
@@ -244,7 +294,17 @@ def main():
         shadow_outside_weight=args.shadow_outside_weight,
         mask_core_erode_px=args.mask_core_erode_px,
         mask_boundary_weight=args.mask_boundary_weight,
-        mask_weight_power=args.mask_weight_power)
+        mask_weight_power=args.mask_weight_power,
+        transsplat_hdr_source=args.transsplat_hdr_source,
+        transsplat_hdr_target=args.transsplat_hdr_target,
+        transsplat_vlm_pt=args.transsplat_vlm_pt,
+        transsplat_skip_visibility=args.transsplat_skip_visibility,
+        transsplat_sh_loss_weight=args.transsplat_sh_loss_weight,
+        transsplat_warm_start=args.transsplat_warm_start,
+        transsplat_floor_alpha=args.transsplat_floor_alpha,
+        transsplat_tau_max=args.transsplat_tau_max,
+        transsplat_num_samples=args.transsplat_num_samples,
+        lambda_sh_band=args.lambda_sh_band)
 
     # ----------------------------------------------------------------
     # Step 6: Bake delta into model and save

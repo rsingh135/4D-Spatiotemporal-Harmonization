@@ -227,16 +227,47 @@ def generateCamerasFromTransforms(path, template_transformsfile, extension, maxt
         c2w = torch.Tensor(np.array([[-1,0,0,0],[0,0,1,0],[0,1,0,0],[0,0,0,1]])) @ c2w
         return c2w
     cam_infos = []
-    # generate render poses and times
-    render_poses = torch.stack([pose_spherical(angle, -30.0, 4.0) for angle in np.linspace(-180,180,160+1)[:-1]], 0)
-    render_times = torch.linspace(0,maxtime,render_poses.shape[0])
+    # Read template to get FOV and compute scene center/radius for video orbit
     with open(os.path.join(path, template_transformsfile)) as json_file:
         template_json = json.load(json_file)
         try:
             fovx = template_json["camera_angle_x"]
         except:
             fovx = focal2fov(template_json["fl_x"], template_json['w'])
-    print("hello!!!!")
+
+    # Use actual training cameras for video — pick the middle elevation ring, sort by azimuth
+    _frames = template_json["frames"]
+    _cam_pos = np.array([np.array(f["transform_matrix"])[:3, 3] for f in _frames])
+    _center = _cam_pos.mean(axis=0)
+    _rel = _cam_pos - _center
+    _elevs = np.degrees(np.arctan2(_rel[:, 2], np.sqrt(_rel[:, 0]**2 + _rel[:, 1]**2)))
+    _azimuths = np.arctan2(_rel[:, 1], _rel[:, 0])
+    # Find the median elevation and select cameras within 5° of it
+    _med_elev = np.median(_elevs)
+    _ring_mask = np.abs(_elevs - _med_elev) < 5.0
+    _ring_idx = np.where(_ring_mask)[0]
+    _ring_az = _azimuths[_ring_idx]
+    _sorted_order = np.argsort(_ring_az)
+    _sorted_ring = _ring_idx[_sorted_order]
+    _sorted_az_vals = _ring_az[_sorted_order]
+    # Remove big azimuth gaps: keep only the longest contiguous arc
+    if len(_sorted_az_vals) > 2:
+        _gaps = np.diff(_sorted_az_vals)
+        _max_gap_threshold = np.radians(15.0)  # 15° max allowed gap
+        _big_gaps = np.where(_gaps > _max_gap_threshold)[0]
+        if len(_big_gaps) > 0:
+            # Find longest contiguous segment between big gaps
+            _boundaries = np.concatenate([[-1], _big_gaps, [len(_sorted_az_vals) - 1]])
+            _seg_lens = np.diff(_boundaries)
+            _best_seg = np.argmax(_seg_lens)
+            _seg_start = _boundaries[_best_seg] + 1
+            _seg_end = _boundaries[_best_seg + 1] + 1
+            _sorted_ring = _sorted_ring[_seg_start:_seg_end]
+            print(f"Video: removed {len(_big_gaps)} azimuth gap(s) >15°, "
+                  f"keeping {_seg_end - _seg_start}/{len(_ring_idx)} cameras")
+    render_poses = torch.stack([torch.Tensor(np.array(_frames[i]["transform_matrix"])) for i in _sorted_ring], 0)
+    render_times = torch.linspace(0, maxtime, render_poses.shape[0])
+    print(f"Video: {len(_sorted_ring)} cameras from middle ring (elev ~{_med_elev:.1f}°), sorted by azimuth")
     # breakpoint()
     # load a single image to get image info.
     for idx, frame in enumerate(template_json["frames"]):
@@ -249,7 +280,7 @@ def generateCamerasFromTransforms(path, template_transformsfile, extension, maxt
         break
     # format information
     for idx, (time, poses) in enumerate(zip(render_times,render_poses)):
-        time = time/maxtime
+        time = time/maxtime if maxtime > 0 else 0.0
         matrix = np.linalg.inv(np.array(poses))
         R = -np.transpose(matrix[:3,:3])
         R[:,0] = -R[:,0]
@@ -318,6 +349,9 @@ def read_timeline(path):
     time_line.sort()
     timestamp_mapper = {}
     max_time_float = max(time_line)
+    if max_time_float == 0:
+        # Static scene: all timestamps are 0
+        max_time_float = 1.0
     for index, time in enumerate(time_line):
         # timestamp_mapper[time] = index
         timestamp_mapper[time] = time/max_time_float
@@ -348,8 +382,13 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png", need_f
         num_pts = 2000
         print(f"Generating random point cloud ({num_pts})...")
 
-        # We create random points inside the bounds of the synthetic Blender scenes
-        xyz = np.random.random((num_pts, 3)) * 2.6 - 1.3
+        # Center random points around the scene (camera centroid), scaled to camera spread
+        center = -nerf_normalization["translate"]
+        radius = nerf_normalization["radius"]
+        if radius < 0.01:
+            radius = 1.3  # fallback
+        xyz = (np.random.random((num_pts, 3)) * 2 - 1) * radius + center
+        print(f"  Point cloud center: {center}, radius: {radius:.4f}")
         shs = np.random.random((num_pts, 3)) / 255.0
         pcd = BasicPointCloud(points=xyz, colors=SH2RGB(shs), normals=np.zeros((num_pts, 3)))
     # storePly(ply_path, xyz, SH2RGB(shs) * 255)

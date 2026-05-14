@@ -11,11 +11,42 @@
 
 import torch
 import math
+import inspect
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from scene.feature_gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from time import time as get_time
 import sys
+
+def _rasterizer_forward(rasterizer, **kwargs):
+    """Call GaussianRasterizer forward, omitting ``mask`` if this build's CUDA op does not support it."""
+    if "mask" in kwargs and "mask" not in inspect.signature(rasterizer.forward).parameters:
+        kwargs.pop("mask")
+    return rasterizer(**kwargs)
+
+def _gaussian_rasterization_settings(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier : float):
+    """Instantiate ``GaussianRasterizationSettings`` for either antialiasing or legacy rasterizer builds."""
+    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
+    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+    kwargs = dict(
+        image_height=int(viewpoint_camera.image_height),
+        image_width=int(viewpoint_camera.image_width),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        bg=bg_color,
+        scale_modifier=scaling_modifier,
+        viewmatrix=viewpoint_camera.world_view_transform.cuda(),
+        projmatrix=viewpoint_camera.full_proj_transform.cuda(),
+        sh_degree=pc.active_sh_degree,
+        campos=viewpoint_camera.camera_center.cuda(),
+        prefiltered=False,
+        debug=pipe.debug,
+        antialiasing=getattr(pipe, "antialiasing", False),
+    )
+    fields = getattr(GaussianRasterizationSettings, "_fields", ())
+    if "antialiasing" not in fields:
+        kwargs.pop("antialiasing", None)
+    return GaussianRasterizationSettings(**kwargs)
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, stage="fine", cam_type=None,
            override_mask = None, filtered_mask = None):
@@ -36,22 +67,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     
     means3D = pc.get_xyz
     if cam_type != "PanopticSports":
-        tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-        tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-        raster_settings = GaussianRasterizationSettings(
-            image_height=int(viewpoint_camera.image_height),
-            image_width=int(viewpoint_camera.image_width),
-            tanfovx=tanfovx,
-            tanfovy=tanfovy,
-            bg=bg_color,
-            scale_modifier=scaling_modifier,
-            viewmatrix=viewpoint_camera.world_view_transform.cuda(),
-            projmatrix=viewpoint_camera.full_proj_transform.cuda(),
-            sh_degree=pc.active_sh_degree,
-            campos=viewpoint_camera.camera_center.cuda(),
-            prefiltered=False,
-            debug=pipe.debug
-        )
+        raster_settings = _gaussian_rasterization_settings(viewpoint_camera, pc, pipe, bg_color, scaling_modifier)
         time = torch.tensor(viewpoint_camera.time).to(means3D.device).repeat(means3D.shape[0],1)
     else:
         raster_settings = viewpoint_camera['camera']
@@ -142,7 +158,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     # time3 = get_time()
-    rendered_image, rendered_mask, radii, points2d = rasterizer(
+    _pkg = _rasterizer_forward(
+        rasterizer,
         means3D = means3D_final,
         means2D = means2D,
         shs = shs_final,
@@ -152,6 +169,15 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         scales = scales_final,
         rotations = rotations_final,
         cov3D_precomp = cov3D_precomp)
+    # Vanilla 3DGS returns (color, radii, invdepths); some forks return (color, mask, radii, points2d).
+    if len(_pkg) == 3:
+        rendered_image, radii, invdepths = _pkg
+        rendered_mask = torch.zeros((1, *rendered_image.shape[1:]), device=rendered_image.device, dtype=rendered_image.dtype)
+        points2d = invdepths
+    elif len(_pkg) == 4:
+        rendered_image, rendered_mask, radii, points2d = _pkg
+    else:
+        raise RuntimeError(f"Unexpected rasterizer return arity: {len(_pkg)}")
     # time4 = get_time()
     # print("rasterization:",time4-time3)
     # breakpoint()
@@ -180,22 +206,7 @@ def render_segmentation(viewpoint_camera, pc : GaussianModel, pipe, bg_color : t
 
     # Set up rasterization configuration
     means3D = pc._xyz[mask]
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-    raster_settings = GaussianRasterizationSettings(
-        image_height=int(viewpoint_camera.image_height),
-        image_width=int(viewpoint_camera.image_width),
-        tanfovx=tanfovx,
-        tanfovy=tanfovy,
-        bg=bg_color,
-        scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform.cuda(),
-        projmatrix=viewpoint_camera.full_proj_transform.cuda(),
-        sh_degree=pc.active_sh_degree,
-        campos=viewpoint_camera.camera_center.cuda(),
-        prefiltered=False,
-        debug=pipe.debug
-    )
+    raster_settings = _gaussian_rasterization_settings(viewpoint_camera, pc, pipe, bg_color, scaling_modifier)
     if t:
         time = torch.tensor(t).to(means3D.device).repeat(means3D.shape[0],1)
     else:
@@ -258,7 +269,8 @@ def render_segmentation(viewpoint_camera, pc : GaussianModel, pipe, bg_color : t
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     # time3 = get_time()
-    rendered_image, _, radii, points2d = rasterizer(
+    _pkg2 = _rasterizer_forward(
+        rasterizer,
         means3D = means3D_final,
         means2D = means2D,
         shs = shs_final,
@@ -268,6 +280,12 @@ def render_segmentation(viewpoint_camera, pc : GaussianModel, pipe, bg_color : t
         scales = scales_final,
         rotations = rotations_final,
         cov3D_precomp = cov3D_precomp)
+    if len(_pkg2) == 3:
+        rendered_image, radii, points2d = _pkg2
+    elif len(_pkg2) == 4:
+        rendered_image, _, radii, points2d = _pkg2
+    else:
+        raise RuntimeError(f"Unexpected rasterizer return arity: {len(_pkg2)}")
     # time4 = get_time()
     # print("rasterization:",time4-time3)
     # breakpoint()
@@ -295,22 +313,7 @@ def render_mask(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
 
     # Set up rasterization configuration
     means3D = pc.get_xyz
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
-    raster_settings = GaussianRasterizationSettings(
-        image_height=int(viewpoint_camera.image_height),
-        image_width=int(viewpoint_camera.image_width),
-        tanfovx=tanfovx,
-        tanfovy=tanfovy,
-        bg=bg_color,
-        scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform.cuda(),
-        projmatrix=viewpoint_camera.full_proj_transform.cuda(),
-        sh_degree=pc.active_sh_degree,
-        campos=viewpoint_camera.camera_center.cuda(),
-        prefiltered=False,
-        debug=pipe.debug
-    )
+    raster_settings = _gaussian_rasterization_settings(viewpoint_camera, pc, pipe, bg_color, scaling_modifier)
     time = torch.tensor(viewpoint_camera.time).to(means3D.device).repeat(means3D.shape[0],1)
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -360,8 +363,14 @@ def render_mask(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Ten
             "radii": radii}
 
 
-from diff_gaussian_rasterization_contrastive_f import GaussianRasterizationSettings as GaussianRasterizationSettingsContrastiveF
-from diff_gaussian_rasterization_contrastive_f import GaussianRasterizer as GaussianRasterizerContrastiveF
+try:
+    from diff_gaussian_rasterization_contrastive_f import GaussianRasterizationSettings as GaussianRasterizationSettingsContrastiveF
+    from diff_gaussian_rasterization_contrastive_f import GaussianRasterizer as GaussianRasterizerContrastiveF
+    _HAS_CONTRASTIVE_RASTER = True
+except ImportError:
+    GaussianRasterizationSettingsContrastiveF = None  # type: ignore
+    GaussianRasterizerContrastiveF = None  # type: ignore
+    _HAS_CONTRASTIVE_RASTER = False
 # from scene.feature_gaussian_model import GaussianModel
 
 def render_contrastive_feature(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, mlp = None, dropout = -1):
@@ -370,6 +379,10 @@ def render_contrastive_feature(viewpoint_camera, pc : GaussianModel, pipe, bg_co
     
     Background tensor (bg_color) must be on GPU!
     """
+    if not _HAS_CONTRASTIVE_RASTER:
+        raise ImportError(
+            "diff_gaussian_rasterization_contrastive_f is not installed (optional; required only for contrastive / IE render paths)."
+        )
  
     # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
     screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0

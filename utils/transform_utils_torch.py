@@ -149,6 +149,20 @@ def get_state_at_time(pc, timestamp=None, seg=False, static=False):
             scales = pc._scaling
             rotations = pc._rotation
 
+        # Defensive: if the mask selected zero Gaussians, the deformation network's positional
+        # encoding produces a (0, 1) tensor that crashes its first Linear (expects in_dim=48).
+        # Return empty tensors with the right trailing shapes; the caller (`render`) then merges
+        # nothing for this set, equivalent to "this FG is invisible at this frame".
+        if means3D.shape[0] == 0:
+            dev = pc.get_xyz.device
+            sh_shape = pc.get_features.shape
+            empty_xyz   = torch.zeros((0, 3),                          device=dev)
+            empty_scale = torch.ones((0, 3),                           device=dev)
+            empty_rot   = torch.zeros((0, 4),                          device=dev)
+            empty_op    = torch.zeros((0, 1),                          device=dev)
+            empty_shs   = torch.zeros((0, sh_shape[1], sh_shape[2]),   device=dev)
+            return empty_xyz, empty_scale, empty_rot, empty_op, empty_shs
+
         means3D_final, scales_final, rotations_final, opacity_final, shs_final = pc._deformation(means3D, scales, 
                                                                     rotations, opacity, shs,
                                                                     time)
