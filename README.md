@@ -1,6 +1,6 @@
 # 4D Spatiotemporal Harmonization
 
-Repository: [github.com/rsingh135/4D-Spatiotemporal-Harmonization](https://github.com/rsingh135/4D-Spatiotemporal-Harmonization)
+**[Spatiotemporal Relighting Presentation](https://docs.google.com/presentation/d/1sYxFy22wpCMfFpZAxKPnyTr5TvHjidlR/edit?usp=sharing&ouid=110820616071956482790&rtpof=true&sd=true)**
 
 This project extends **[SA4D (Segment-Anything-in-4D)](https://github.com/Marine318/sa4d)** — code organized around the paper *Segment Any 4D Gaussians* — with a **relighting harmonization** pipeline. The goal is to composite objects from 4D Gaussian scenes into new environments and **adjust the object’s appearance** (via optimized spherical harmonics) so it matches the host scene’s lighting, using **object masks** derived from the SA4D segmentation workflow.
 
